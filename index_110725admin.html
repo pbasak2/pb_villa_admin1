@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PB Villa Gate Control (MQTT + BLE)</title>
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+    <style>
+        /* Your existing styles here, unchanged */
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #2f80ed, #56ccf2);
+            color: #fff;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 1rem;
+        }
+
+        .app-container {
+            background: #fff;
+            color: #333;
+            width: 100%;
+            max-width: 400px;
+            border-radius: 18px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15);
+            padding: 2.5rem 2rem;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+        }
+
+        h1 {
+            margin: 0 0 2rem;
+            font-weight: 700;
+            font-size: 1.8rem;
+            color: #2f80ed;
+        }
+
+        button {
+            width: 100%;
+            padding: 1rem 0;
+            margin: 0.5rem 0 1rem 0;
+            font-size: 1.15rem;
+            font-weight: 600;
+            border-radius: 10px;
+            border: none;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            user-select: none;
+            background: #2f80ed;
+            color: white;
+            box-shadow: 0 6px 12px rgba(47, 128, 237, 0.4);
+        }
+
+        button:disabled {
+            background: #a0bcd5;
+            cursor: not-allowed;
+            box-shadow: none;
+        }
+
+        button:hover:not(:disabled) {
+            background: #1366d6;
+            box-shadow: 0 8px 20px rgba(19, 102, 214, 0.6);
+        }
+
+        #open-gate {
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            font-size: 1.4rem;
+            margin: 20px auto 30px auto;
+            background: #6CB156;
+            box-shadow: 0 6px 12px rgba(47, 128, 237, 0.4);
+        }
+
+        #open-gate:disabled {
+            background: #a0bcd5;
+            cursor: not-allowed;
+            box-shadow: none;
+        }
+
+        .status {
+            font-weight: 600;
+            font-size: 0.95rem;
+            margin-top: -0.5rem;
+            margin-bottom: 1.5rem;
+            user-select: none;
+            min-height: 1.3em;
+            text-align: center;
+        }
+
+        .success {
+            color: #27ae60;
+        }
+
+        .error {
+            color: #e74c3c;
+        }
+
+        .connected {
+            background-color: #27ae60 !important;
+            color: #fff !important;
+            box-shadow: 0 6px 12px rgba(39, 174, 96, 0.5);
+        }
+
+        .footer {
+            font-size: 0.8rem;
+            color: #999;
+            user-select: none;
+            margin-top: 1rem;
+        }
+
+        #reset-wifi {
+            background: #f39c12;
+        }
+
+        #reset-wifi:hover {
+            background: #d68910;
+        }
+
+        /* New Wi-Fi inputs styling */
+        #wifi-credentials {
+            width: 100%;
+            margin-bottom: 1rem;
+        }
+
+        #wifi-credentials input {
+            width: 100%;
+            padding: 0.8rem 1rem;
+            margin: 0.3rem 0;
+            font-size: 1rem;
+            border-radius: 8px;
+            border: 1.5px solid #ccc;
+            box-sizing: border-box;
+        }
+
+        #send-wifi-cred {
+            background-color: #27ae60;
+            box-shadow: 0 6px 12px rgba(39, 174, 96, 0.5);
+        }
+
+        #send-wifi-cred:hover:not(:disabled) {
+            background-color: #219150;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="app-container">
+        <h1>GATE CONTROL</h1>
+
+        <button id="ble-connect">🔵 Connect BLE</button>
+        <div id="ble-status" class="status">BLE Status: Disconnected</div>
+
+        <button id="reset-wifi">🔄 Reset Wi-Fi (AP Mode)</button>
+        <div id="reset-status" class="status"></div>
+
+        <!-- New Wi-Fi Credentials Inputs -->
+        <div id="wifi-credentials">
+            <input type="text" id="wifi-ssid" placeholder="Wi-Fi SSID" autocomplete="off" />
+            <input type="password" id="wifi-pass" placeholder="Wi-Fi Password" autocomplete="off" />
+            <button id="send-wifi-cred" disabled>📶 Send Wi-Fi Credentials</button>
+            <div id="wifi-send-status" class="status"></div>
+        </div>
+
+        <button id="mqtt-connect">☁ Connect Web</button>
+        <div id="mqtt-status" class="status">MQTT Status: Disconnected</div>
+
+        <button id="open-gate" disabled>OPEN</button>
+        <div id="open-gate-status" class="status"></div>
+
+        <div class="footer">Powered by PB Villa Tech</div>
+    </div>
+
+    <script>
+        let bleDevice = null;
+        let bleCharacteristic = null;
+        let mqttClient = null;
+        let mqttConnected = false;
+        let bleConnected = false;
+
+        const bleStatusDiv = document.getElementById('ble-status');
+        const mqttStatusDiv = document.getElementById('mqtt-status');
+        const openGateBtn = document.getElementById('open-gate');
+        const openGateStatusDiv = document.getElementById('open-gate-status');
+        const mqttConnectBtn = document.getElementById('mqtt-connect');
+        const bleConnectBtn = document.getElementById('ble-connect');
+        const resetWifiBtn = document.getElementById('reset-wifi');
+        const resetStatusDiv = document.getElementById('reset-status');
+        const wifiSsidInput = document.getElementById('wifi-ssid');
+        const wifiPassInput = document.getElementById('wifi-pass');
+        const sendWifiCredBtn = document.getElementById('send-wifi-cred');
+        const wifiSendStatusDiv = document.getElementById('wifi-send-status');
+
+        const mqttBroker = 'wss://88f3ffb6c96244f88c492c358cfb13a4.s1.eu.hivemq.cloud:8884/mqtt';
+        const mqttTopic = 'pb_villa/gate';
+
+        function updateOpenGateButton() {
+            openGateBtn.disabled = !(mqttConnected || bleConnected);
+            sendWifiCredBtn.disabled = !bleConnected; // Enable Wi-Fi send only if BLE connected
+        }
+
+        // BLE Connect
+        bleConnectBtn.onclick = async () => {
+            if (bleConnected && bleDevice && bleDevice.gatt.connected) {
+                bleDevice.gatt.disconnect();
+                bleConnected = false;
+                bleStatusDiv.textContent = 'BLE Disconnected';
+                bleStatusDiv.className = 'status error';
+                bleConnectBtn.textContent = '🔵 Connect BLE';
+                bleConnectBtn.classList.remove('connected');
+                updateOpenGateButton();
+                return;
+            }
+
+            bleConnectBtn.disabled = true;
+            bleStatusDiv.textContent = 'Requesting BLE device...';
+            bleStatusDiv.className = 'status';
+
+            try {
+                bleDevice = await navigator.bluetooth.requestDevice({
+                    filters: [{
+                        services: ['12345678-1234-5678-1234-56789abcdef0']
+                    }]
+                });
+
+                bleStatusDiv.textContent = 'Connecting to BLE device...';
+                const server = await bleDevice.gatt.connect();
+
+                bleDevice.addEventListener('gattserverdisconnected', () => {
+                    bleConnected = false;
+                    bleStatusDiv.textContent = 'BLE Disconnected';
+                    bleStatusDiv.className = 'status error';
+                    bleConnectBtn.textContent = '🔵 Connect BLE';
+                    bleConnectBtn.classList.remove('connected');
+                    updateOpenGateButton();
+                });
+
+                const service = await server.getPrimaryService('12345678-1234-5678-1234-56789abcdef0');
+                bleCharacteristic = await service.getCharacteristic('abcdefab-1234-5678-1234-56789abcdef1');
+
+                bleConnected = true;
+                bleStatusDiv.textContent = 'BLE Connected';
+                bleStatusDiv.className = 'status success';
+                bleConnectBtn.textContent = 'Disconnect BLE';
+                bleConnectBtn.classList.add('connected');
+                updateOpenGateButton();
+            } catch (error) {
+                console.error('BLE Error:', error);
+                bleStatusDiv.textContent = 'BLE Connection Failed';
+                bleStatusDiv.className = 'status error';
+                bleConnectBtn.textContent = '🔵 Connect BLE';
+                bleConnectBtn.classList.remove('connected');
+            } finally {
+                bleConnectBtn.disabled = false;
+            }
+        };
+
+        // MQTT Connect
+        mqttConnectBtn.onclick = () => {
+            if (mqttConnected) {
+                mqttClient.end();
+                return;
+            }
+
+            mqttStatusDiv.textContent = 'Connecting to MQTT...';
+            mqttConnectBtn.disabled = true;
+
+            mqttClient = mqtt.connect(mqttBroker, {
+                clientId: 'pbvilla_' + Math.random().toString(16).substr(2, 8),
+                username: 'pbvilla',
+                password: 'Hon12345!',
+                clean: true,
+                reconnectPeriod: 1000,
+                connectTimeout: 4000,
+                protocol: 'wss'
+            });
+
+            mqttClient.on('connect', () => {
+                mqttConnected = true;
+                mqttStatusDiv.textContent = 'MQTT Connected';
+                mqttStatusDiv.className = 'status success';
+                mqttConnectBtn.textContent = 'Disconnect Web';
+                mqttConnectBtn.classList.add('connected');
+                mqttConnectBtn.disabled = false;
+                updateOpenGateButton();
+            });
+
+            mqttClient.on('error', (err) => {
+                mqttStatusDiv.textContent = 'MQTT Error: ' + err.message;
+                mqttStatusDiv.className = 'status error';
+                mqttConnectBtn.classList.remove('connected');
+                mqttConnectBtn.disabled = false;
+            });
+
+            mqttClient.on('close', () => {
+                mqttConnected = false;
+                mqttStatusDiv.textContent = 'MQTT Disconnected';
+                mqttStatusDiv.className = 'status error';
+                mqttConnectBtn.textContent = 'Connect Web';
+                mqttConnectBtn.classList.remove('connected');
+                mqttConnectBtn.disabled = false;
+                updateOpenGateButton();
+            });
+        };
+
+        // OPEN GATE
+        openGateBtn.onclick = async () => {
+            openGateStatusDiv.textContent = '';
+            openGateStatusDiv.className = 'status';
+            openGateBtn.disabled = true;
+
+            const originalText = 'OPEN';
+            let countdown = 5;
+            openGateBtn.textContent = countdown;
+
+            const countdownInterval = setInterval(() => {
+                countdown--;
+                if (countdown > 0) {
+                    openGateBtn.textContent = countdown;
+                } else {
+                    clearInterval(countdownInterval);
+                    openGateBtn.textContent = originalText;
+                    updateOpenGateButton();
+                }
+            }, 1000);
+
+            if (bleConnected && bleCharacteristic) {
+                try {
+                    const encoder = new TextEncoder();
+                    await bleCharacteristic.writeValue(encoder.encode('OPEN'));
+                    openGateStatusDiv.textContent = 'Gate opened via BLE';
+                    openGateStatusDiv.className = 'status success';
+                } catch (err) {
+                    openGateStatusDiv.textContent = 'BLE send failed';
+                    openGateStatusDiv.className = 'status error';
+                }
+            } else if (mqttConnected && mqttClient) {
+                mqttClient.publish(mqttTopic, '1');
+                openGateStatusDiv.textContent = 'Gate command sent via MQTT';
+                openGateStatusDiv.className = 'status success';
+            } else {
+                openGateStatusDiv.textContent = 'No connection available';
+                openGateStatusDiv.className = 'status error';
+            }
+        };
+
+        // RESET WIFI (AP MODE)
+        resetWifiBtn.onclick = async () => {
+            resetStatusDiv.textContent = '';
+            resetStatusDiv.className = 'status';
+
+            if (!bleConnected || !bleCharacteristic) {
+                resetStatusDiv.textContent = '❌ BLE not connected';
+                resetStatusDiv.className = 'status error';
+                return;
+            }
+
+            try {
+                const encoder = new TextEncoder();
+                await bleCharacteristic.writeValue(encoder.encode("APMODE"));
+                resetStatusDiv.textContent = '✅ Reset command sent. Rebooting...';
+                resetStatusDiv.className = 'status success';
+            } catch (err) {
+                resetStatusDiv.textContent = '❌ Failed to send reset';
+                resetStatusDiv.className = 'status error';
+                console.error(err);
+            }
+        };
+
+        // SEND WIFI CREDENTIALS VIA BLE
+        sendWifiCredBtn.onclick = async () => {
+            wifiSendStatusDiv.textContent = '';
+            wifiSendStatusDiv.className = 'status';
+
+            if (!bleConnected || !bleCharacteristic) {
+                wifiSendStatusDiv.textContent = '❌ BLE not connected';
+                wifiSendStatusDiv.className = 'status error';
+                return;
+            }
+
+            const ssid = wifiSsidInput.value.trim();
+            const pass = wifiPassInput.value.trim();
+
+            if (!ssid || !pass) {
+                wifiSendStatusDiv.textContent = '❌ Please enter both SSID and Password';
+                wifiSendStatusDiv.className = 'status error';
+                return;
+            }
+
+            // Format Wi-Fi credentials command as "WIFI:<SSID>:<PASSWORD>"
+            const wifiCommand = `SETWIFI:${ssid}:${pass}`;
+
+            try {
+                const encoder = new TextEncoder();
+                await bleCharacteristic.writeValue(encoder.encode(wifiCommand));
+                wifiSendStatusDiv.textContent = '✅ Wi-Fi credentials sent';
+                wifiSendStatusDiv.className = 'status success';
+            } catch (err) {
+                wifiSendStatusDiv.textContent = '❌ Failed to send Wi-Fi credentials';
+                wifiSendStatusDiv.className = 'status error';
+                console.error(err);
+            }
+        };
+
+        // Update buttons status on BLE connect/disconnect
+        updateOpenGateButton();
+    </script>
+</body>
+
+</html>
